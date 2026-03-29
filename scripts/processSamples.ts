@@ -24,7 +24,7 @@ async function main() {
     await fs.mkdir(sheetOutputDir, { recursive: true });
 
     for (const animation of processed.animations) {
-      const rendered = renderAnimationSheet(animation);
+      const rendered = renderAnimationSheet(animation, processed.exportLayout);
       const baseName = `${processed.id}-row-${animation.row + 1}`;
       await writePng(path.join(sheetOutputDir, `${baseName}.png`), rendered.image);
       await fs.writeFile(

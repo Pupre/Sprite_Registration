@@ -61,6 +61,13 @@ export interface AnimationMetrics {
   improvementRatio: number;
 }
 
+export interface SheetExportLayout {
+  cellWidth: number;
+  cellHeight: number;
+  pivotX: number;
+  baselineY: number;
+}
+
 export interface ProcessedAnimation {
   id: string;
   row: number;
@@ -75,4 +82,5 @@ export interface ProcessedSpriteSheet {
   columns: number;
   rows: number;
   animations: ProcessedAnimation[];
+  exportLayout?: SheetExportLayout;
 }

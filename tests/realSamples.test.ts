@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { frameContactY } from "../src/core/alignment/contact";
 import { renderAnimationSheet } from "../src/core/export/renderAnimationSheet";
 import { processSpriteSheet } from "../src/core/pipeline/processSpriteSheet";
 import type { AlignedAnimationFrame, RgbaPixel } from "../src/core/types/image";
@@ -9,7 +10,8 @@ import { getPixel } from "../src/core/utils/image";
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(testDir, "..");
 const samples = ["GeneralFrog.png", "Slime.png", "Sparky.png"];
-const opaqueSamples = ["GeneralFrog.png", "Slime.png"];
+const transparentSamples = ["GeneralFrog.png", "Sparky.png"];
+const opaqueSamples = ["Slime.png"];
 
 function saturation(pixel: RgbaPixel): number {
   return Math.max(pixel.r, pixel.g, pixel.b) - Math.min(pixel.r, pixel.g, pixel.b);
@@ -51,6 +53,27 @@ function measureOpaqueArtifactRatio(
   return backgroundLike / Math.max(1, visible);
 }
 
+function range(values: number[]): number {
+  return Math.max(...values) - Math.min(...values);
+}
+
+function measureBottomGap(
+  image: { width: number; height: number; data: Uint8Array },
+  cellWidth: number,
+  cellHeight: number,
+  frameIndex: number
+): number {
+  for (let y = cellHeight - 1; y >= 0; y -= 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      if (getPixel(image, frameIndex * cellWidth + x, y).a > 0) {
+        return cellHeight - 1 - y;
+      }
+    }
+  }
+
+  return cellHeight;
+}
+
 describe("real sample pipeline", () => {
   it(
     "processes the provided sample sheets into 3 aligned row animations each",
@@ -69,7 +92,7 @@ describe("real sample pipeline", () => {
           expect(animation.frames).toHaveLength(4);
           expect(animation.frames.every((frame) => frame.analysis.area > 50)).toBe(true);
 
-          const rendered = renderAnimationSheet(animation);
+          const rendered = renderAnimationSheet(animation, result.exportLayout);
           expect(rendered.image.width).toBeGreaterThan(0);
           expect(rendered.image.height).toBeGreaterThan(0);
           expect(rendered.metadata.frameCount).toBe(4);
@@ -80,9 +103,44 @@ describe("real sample pipeline", () => {
 
       const averageRatio = ratios.reduce((sum, ratio) => sum + ratio, 0) / ratios.length;
       const improvedAnimations = ratios.filter((ratio) => ratio < 1).length;
+      const maxRatio = Math.max(...ratios);
 
-      expect(improvedAnimations).toBeGreaterThanOrEqual(6);
-      expect(averageRatio).toBeLessThan(0.95);
+      expect(improvedAnimations).toBe(9);
+      expect(averageRatio).toBeLessThan(0.25);
+      expect(maxRatio).toBeLessThan(0.65);
+    },
+    90000
+  );
+
+  it(
+    "keeps transparent sample anchors and grounded export baselines tight",
+    async () => {
+      const results = await Promise.all(
+        transparentSamples.map((file) => processSpriteSheet(path.join(root, "samples", file), 4, 3))
+      );
+
+      for (const result of results) {
+        const sampleBottomGaps: number[] = [];
+
+        for (const animation of result.animations) {
+          const anchorXs = animation.frames.map((frame) => frame.analysis.coreAnchor.x + frame.offset.x);
+          const contactYs = animation.frames.map((frame) => frameContactY(frame) + frame.offset.y);
+          const rendered = renderAnimationSheet(animation, result.exportLayout);
+          const bottomGaps = animation.frames.map((_, frameIndex) =>
+            measureBottomGap(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
+          );
+
+          sampleBottomGaps.push(...bottomGaps);
+
+          expect(range(anchorXs)).toBeLessThanOrEqual(1.25);
+          expect(range(contactYs)).toBeLessThanOrEqual(1.25);
+          expect(Math.max(...bottomGaps)).toBeLessThanOrEqual(1);
+          expect(range(bottomGaps)).toBeLessThanOrEqual(1);
+        }
+
+        expect(Math.max(...sampleBottomGaps)).toBeLessThanOrEqual(1);
+        expect(range(sampleBottomGaps)).toBeLessThanOrEqual(1);
+      }
     },
     90000
   );
@@ -97,7 +155,7 @@ describe("real sample pipeline", () => {
       const artifactRatios: number[] = [];
       for (const result of results) {
         for (const animation of result.animations) {
-          const rendered = renderAnimationSheet(animation);
+          const rendered = renderAnimationSheet(animation, result.exportLayout);
           for (let frameIndex = 0; frameIndex < animation.frames.length; frameIndex += 1) {
             const frame = animation.frames[frameIndex];
             const bounds = frame.analysis.fullBounds;

@@ -94,15 +94,23 @@ function overlaps(a: Rect, b: Rect): boolean {
 }
 
 function robustGround(mask: boolean[][]): number {
-  const rowCounts = mask.map((row) => row.filter(Boolean).length);
-  const maxCount = Math.max(...rowCounts, 0);
-  const threshold = Math.max(2, Math.floor(maxCount * 0.35));
-  for (let y = rowCounts.length - 1; y >= 0; y -= 1) {
-    if (rowCounts[y] >= threshold) {
-      return y;
+  const bottoms: number[] = [];
+
+  for (let x = 0; x < (mask[0]?.length ?? 0); x += 1) {
+    for (let y = mask.length - 1; y >= 0; y -= 1) {
+      if (mask[y][x]) {
+        bottoms.push(y);
+        break;
+      }
     }
   }
-  return rowCounts.length - 1;
+
+  if (bottoms.length === 0) {
+    return mask.length - 1;
+  }
+
+  bottoms.sort((a, b) => a - b);
+  return bottoms[Math.floor((bottoms.length - 1) * 0.85)] ?? bottoms[bottoms.length - 1];
 }
 
 function buildAlphaMask(image: RgbaImage, threshold: number): boolean[][] {
@@ -381,9 +389,13 @@ function buildAnalysisFromComponents(
         return 0;
       }
       const inCore = coreMask[y][x] || rectContainsPoint(coreBounds, { x, y });
-      const verticalWeight = 0.65 + (1 - y / Math.max(1, height - 1)) * 0.35;
+      const relativeY = (y - coreBounds.y) / Math.max(1, coreBounds.height - 1);
+      const coreCenterX = coreBounds.x + coreBounds.width / 2;
+      const distanceToCenterX = Math.abs(x - coreCenterX) / Math.max(1, coreBounds.width / 2);
+      const verticalWeight = 0.72 + Math.max(0, Math.min(1, relativeY)) * 0.48;
+      const horizontalWeight = 1 - Math.min(1, distanceToCenterX) * 0.22;
       const matteWeight = alphaMode ? Math.max(0.15, matte[y][x]) : 0.35 + matte[y][x] * 0.65;
-      return (inCore ? 1 : 0.28) * verticalWeight * matteWeight;
+      return (inCore ? 1 : 0.18) * verticalWeight * horizontalWeight * matteWeight;
     })
   );
 

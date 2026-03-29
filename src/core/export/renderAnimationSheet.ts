@@ -1,5 +1,6 @@
-import type { ProcessedAnimation, Rect, RgbaImage, RgbaPixel } from "../types/image";
-import { clamp, createImage, expandRect, getPixel, rectUnion, setPixel } from "../utils/image";
+import type { ProcessedAnimation, RgbaImage, RgbaPixel, SheetExportLayout } from "../types/image";
+import { computeAnimationExportProfile } from "./computeSheetExportLayout";
+import { clamp, createImage, getPixel, setPixel } from "../utils/image";
 
 export interface RenderedAnimationSheet {
   image: RgbaImage;
@@ -9,6 +10,8 @@ export interface RenderedAnimationSheet {
     cellWidth: number;
     cellHeight: number;
     frameCount: number;
+    pivotX: number;
+    baselineY: number;
     frames: Array<{
       id: string;
       offsetX: number;
@@ -84,25 +87,20 @@ function recoverForegroundPixel(pixel: RgbaPixel, background: RgbaPixel, alpha: 
   };
 }
 
-export function renderAnimationSheet(animation: ProcessedAnimation): RenderedAnimationSheet {
-  const padding = 4;
-  const sourceRects = animation.frames.map((frame) =>
-    expandRect(frame.analysis.fullBounds, 2, frame.image.width, frame.image.height)
-  );
-  const worldRects: Rect[] = sourceRects.map((rect, index) => ({
-    x: rect.x + animation.frames[index].offset.x,
-    y: rect.y + animation.frames[index].offset.y,
-    width: rect.width,
-    height: rect.height
-  }));
-  const union = rectUnion(worldRects);
-
-  const cellWidth = union.width + padding * 2;
-  const cellHeight = union.height + padding * 2;
+export function renderAnimationSheet(
+  animation: ProcessedAnimation,
+  layout?: SheetExportLayout
+): RenderedAnimationSheet {
+  const padding = 0;
+  const profile = computeAnimationExportProfile(animation);
+  const cellWidth = layout?.cellWidth ?? profile.leftExtent + profile.rightExtent + padding * 2;
+  const cellHeight = layout?.cellHeight ?? profile.topExtent + profile.bottomExtent + padding * 2;
+  const pivotX = layout?.pivotX ?? profile.leftExtent + padding;
+  const baselineY = layout?.baselineY ?? profile.topExtent + padding;
   const output = createImage(cellWidth * animation.frames.length, cellHeight, { a: 0 });
 
   animation.frames.forEach((frame, frameIndex) => {
-    const sourceRect = sourceRects[frameIndex];
+    const sourceRect = profile.sourceRects[frameIndex];
     for (let y = 0; y < sourceRect.height; y += 1) {
       for (let x = 0; x < sourceRect.width; x += 1) {
         const sourceX = sourceRect.x + x;
@@ -134,11 +132,8 @@ export function renderAnimationSheet(animation: ProcessedAnimation): RenderedAni
 
         const targetX =
           frameIndex * cellWidth +
-          sourceX +
-          frame.offset.x -
-          union.x +
-          padding;
-        const targetY = sourceY + frame.offset.y - union.y + padding;
+          Math.round(sourceX + frame.offset.x - profile.anchorX + pivotX);
+        const targetY = Math.round(sourceY + frame.offset.y - profile.groundY + baselineY);
         setPixel(output, targetX, targetY, outputPixel);
       }
     }
@@ -152,6 +147,8 @@ export function renderAnimationSheet(animation: ProcessedAnimation): RenderedAni
       cellWidth,
       cellHeight,
       frameCount: animation.frames.length,
+      pivotX,
+      baselineY,
       frames: animation.frames.map((frame) => ({
         id: frame.id,
         offsetX: frame.offset.x,

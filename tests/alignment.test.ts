@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { alignAnimation } from "../src/core/alignment/alignAnimation";
+import { frameContactY } from "../src/core/alignment/contact";
 import { analyzeForeground } from "../src/core/mask/foreground";
 import type { AnimationFrame } from "../src/core/types/image";
 import { createImage, setPixel } from "../src/core/utils/image";
@@ -40,8 +41,12 @@ describe("alignAnimation", () => {
     ].map((frame, index) => ({ ...frame, column: index }));
 
     const aligned = alignAnimation("synthetic-row-1", 0, frames);
+    const alignedAnchorsX = aligned.frames.map((frame) => frame.analysis.coreAnchor.x + frame.offset.x);
+    const alignedGroundsY = aligned.frames.map((frame) => frameContactY(frame) + frame.offset.y);
 
     expect(aligned.metrics.rawJitterScore).toBeGreaterThan(0);
-    expect(aligned.metrics.improvementRatio).toBeLessThan(0.8);
+    expect(aligned.metrics.improvementRatio).toBeLessThan(0.3);
+    expect(Math.max(...alignedAnchorsX) - Math.min(...alignedAnchorsX)).toBeLessThanOrEqual(1);
+    expect(Math.max(...alignedGroundsY) - Math.min(...alignedGroundsY)).toBeLessThanOrEqual(1);
   });
 });

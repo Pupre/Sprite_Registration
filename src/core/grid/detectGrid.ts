@@ -77,11 +77,25 @@ function weightedKMeans(values: number[], count: number): number[] {
 }
 
 function boundariesFromCenters(length: number, centers: number[]): number[] {
-  const boundaries = [0];
+  if (centers.length === 0) {
+    return [0, length];
+  }
+
+  if (centers.length === 1) {
+    return [0, length];
+  }
+
+  const boundaries: number[] = [];
+  const firstGap = centers[1] - centers[0];
+  boundaries.push(Math.max(0, Math.round(centers[0] - firstGap / 2)));
+
   for (let index = 0; index < centers.length - 1; index += 1) {
     boundaries.push(Math.round((centers[index] + centers[index + 1]) / 2));
   }
-  boundaries.push(length);
+
+  const lastGap = centers[centers.length - 1] - centers[centers.length - 2];
+  boundaries.push(Math.min(length, Math.round(centers[centers.length - 1] + lastGap / 2)));
+
   return boundaries;
 }
 
