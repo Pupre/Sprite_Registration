@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { frameContactY } from "../src/core/alignment/contact";
 import { renderAnimationSheet } from "../src/core/export/renderAnimationSheet";
+import { renderInterpolatedAnimationSheet } from "../src/core/export/renderInterpolatedAnimationSheet";
 import { processSpriteSheet } from "../src/core/pipeline/processSpriteSheet";
 import type { AlignedAnimationFrame, RgbaPixel } from "../src/core/types/image";
 import { getPixel } from "../src/core/utils/image";
@@ -74,6 +75,27 @@ function measureBottomGap(
   return cellHeight;
 }
 
+function measureVisibleHeight(
+  image: { width: number; height: number; data: Uint8Array },
+  cellWidth: number,
+  cellHeight: number,
+  frameIndex: number
+): number {
+  let top = cellHeight;
+  let bottom = -1;
+
+  for (let y = 0; y < cellHeight; y += 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      if (getPixel(image, frameIndex * cellWidth + x, y).a > 0) {
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+  }
+
+  return bottom < top ? 0 : bottom - top + 1;
+}
+
 describe("real sample pipeline", () => {
   it(
     "processes the provided sample sheets into 3 aligned row animations each",
@@ -129,6 +151,9 @@ describe("real sample pipeline", () => {
           const bottomGaps = animation.frames.map((_, frameIndex) =>
             measureBottomGap(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
           );
+          const visibleHeights = animation.frames.map((_, frameIndex) =>
+            measureVisibleHeight(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
+          );
 
           sampleBottomGaps.push(...bottomGaps);
 
@@ -136,10 +161,36 @@ describe("real sample pipeline", () => {
           expect(range(contactYs)).toBeLessThanOrEqual(1.25);
           expect(Math.max(...bottomGaps)).toBeLessThanOrEqual(1);
           expect(range(bottomGaps)).toBeLessThanOrEqual(1);
+          expect(range(visibleHeights)).toBeLessThanOrEqual(4);
         }
 
         expect(Math.max(...sampleBottomGaps)).toBeLessThanOrEqual(1);
         expect(range(sampleBottomGaps)).toBeLessThanOrEqual(1);
+      }
+    },
+    90000
+  );
+
+  it(
+    "renders transparent interpolation strips with expanded frame counts while keeping grounded baselines",
+    async () => {
+      const results = await Promise.all(
+        transparentSamples.map((file) => processSpriteSheet(path.join(root, "samples", file), 4, 3))
+      );
+
+      for (const result of results) {
+        for (const animation of result.animations) {
+          const rendered = renderInterpolatedAnimationSheet(animation, result.exportLayout);
+          const bottomGaps = Array.from({ length: rendered.metadata.frameCount }, (_, frameIndex) =>
+            measureBottomGap(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
+          );
+
+          expect(rendered.metadata.frameCount).toBe(animation.frames.length * 2 - 1);
+          expect(rendered.metadata.insertedFrameCount).toBe(animation.frames.length - 1);
+          expect(rendered.metadata.sourceFrameCount).toBe(animation.frames.length);
+          expect(Math.max(...bottomGaps)).toBeLessThanOrEqual(1);
+          expect(range(bottomGaps)).toBeLessThanOrEqual(1);
+        }
       }
     },
     90000

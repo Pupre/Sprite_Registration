@@ -1,4 +1,5 @@
 import type { ProcessedAnimation, RgbaImage, RgbaPixel, SheetExportLayout } from "../types/image";
+import { frameContactY } from "../alignment/contact";
 import { computeAnimationExportProfile } from "./computeSheetExportLayout";
 import { clamp, createImage, getPixel, setPixel } from "../utils/image";
 
@@ -19,6 +20,7 @@ export interface RenderedAnimationSheet {
       anchorX: number;
       anchorY: number;
       groundY: number;
+      scale: number;
     }>;
   };
 }
@@ -87,6 +89,51 @@ function recoverForegroundPixel(pixel: RgbaPixel, background: RgbaPixel, alpha: 
   };
 }
 
+function frameBottomGap(
+  image: RgbaImage,
+  cellWidth: number,
+  cellHeight: number,
+  frameIndex: number
+): number {
+  for (let y = cellHeight - 1; y >= 0; y -= 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      if (getPixel(image, frameIndex * cellWidth + x, y).a > 0) {
+        return cellHeight - 1 - y;
+      }
+    }
+  }
+
+  return cellHeight;
+}
+
+function shiftFrameSegmentDown(
+  image: RgbaImage,
+  cellWidth: number,
+  cellHeight: number,
+  frameIndex: number,
+  amount: number
+) {
+  if (amount <= 0) {
+    return;
+  }
+
+  const startX = frameIndex * cellWidth;
+  const snapshot = createImage(cellWidth, cellHeight, { a: 0 });
+
+  for (let y = 0; y < cellHeight; y += 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      setPixel(snapshot, x, y, getPixel(image, startX + x, y));
+      setPixel(image, startX + x, y, { r: 0, g: 0, b: 0, a: 0 });
+    }
+  }
+
+  for (let y = cellHeight - 1; y >= amount; y -= 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      setPixel(image, startX + x, y, getPixel(snapshot, x, y - amount));
+    }
+  }
+}
+
 export function renderAnimationSheet(
   animation: ProcessedAnimation,
   layout?: SheetExportLayout
@@ -101,10 +148,40 @@ export function renderAnimationSheet(
 
   animation.frames.forEach((frame, frameIndex) => {
     const sourceRect = profile.sourceRects[frameIndex];
-    for (let y = 0; y < sourceRect.height; y += 1) {
-      for (let x = 0; x < sourceRect.width; x += 1) {
-        const sourceX = sourceRect.x + x;
-        const sourceY = sourceRect.y + y;
+    const scale = profile.frameScales[frameIndex] ?? 1;
+    const localAnchorX = frame.analysis.coreAnchor.x;
+    const localGroundY = frameContactY(frame);
+    const baseX =
+      frameIndex * cellWidth +
+      pivotX +
+      (localAnchorX + frame.offset.x - profile.anchorX);
+    const baseY = baselineY + (localGroundY + frame.offset.y - profile.groundY);
+    const startX = Math.floor(baseX + (sourceRect.x - localAnchorX) * scale);
+    const endX = Math.ceil(baseX + (sourceRect.x + sourceRect.width - localAnchorX) * scale);
+    const startY = Math.floor(baseY + (sourceRect.y - localGroundY) * scale);
+    const endY = Math.ceil(baseY + (sourceRect.y + sourceRect.height - localGroundY) * scale);
+
+    for (let targetY = startY; targetY < endY; targetY += 1) {
+      if (targetY < 0 || targetY >= cellHeight) {
+        continue;
+      }
+
+      for (let targetX = startX; targetX < endX; targetX += 1) {
+        if (targetX < frameIndex * cellWidth || targetX >= (frameIndex + 1) * cellWidth) {
+          continue;
+        }
+
+        const sourceX = Math.floor(localAnchorX + (targetX + 0.5 - baseX) / scale);
+        const sourceY = Math.floor(localGroundY + (targetY + 0.5 - baseY) / scale);
+        if (
+          sourceX < sourceRect.x ||
+          sourceY < sourceRect.y ||
+          sourceX >= sourceRect.x + sourceRect.width ||
+          sourceY >= sourceRect.y + sourceRect.height
+        ) {
+          continue;
+        }
+
         const pixel = getPixel(frame.image, sourceX, sourceY);
 
         let outputPixel: RgbaPixel;
@@ -129,14 +206,17 @@ export function renderAnimationSheet(
           );
           outputPixel = recoverForegroundPixel(pixel, background, matteAlpha);
         }
-
-        const targetX =
-          frameIndex * cellWidth +
-          Math.round(sourceX + frame.offset.x - profile.anchorX + pivotX);
-        const targetY = Math.round(sourceY + frame.offset.y - profile.groundY + baselineY);
         setPixel(output, targetX, targetY, outputPixel);
       }
     }
+
+    shiftFrameSegmentDown(
+      output,
+      cellWidth,
+      cellHeight,
+      frameIndex,
+      frameBottomGap(output, cellWidth, cellHeight, frameIndex)
+    );
   });
 
   return {
@@ -149,13 +229,14 @@ export function renderAnimationSheet(
       frameCount: animation.frames.length,
       pivotX,
       baselineY,
-      frames: animation.frames.map((frame) => ({
+      frames: animation.frames.map((frame, index) => ({
         id: frame.id,
         offsetX: frame.offset.x,
         offsetY: frame.offset.y,
         anchorX: Number(frame.analysis.coreAnchor.x.toFixed(2)),
         anchorY: Number(frame.analysis.coreAnchor.y.toFixed(2)),
-        groundY: frame.analysis.groundY
+        groundY: frame.analysis.groundY,
+        scale: profile.frameScales[index] ?? 1
       }))
     }
   };

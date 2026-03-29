@@ -505,6 +505,31 @@ button.secondary-link {
   margin-top: 0;
 }
 
+.interpolation-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.interpolation-summary {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.interpolation-summary h4 {
+  margin: 6px 0 0;
+}
+
+.interpolation-summary small {
+  color: rgba(246, 239, 223, 0.68);
+  line-height: 1.5;
+  text-align: right;
+}
+
 .download-row {
   display: flex;
   gap: 10px;
@@ -623,6 +648,15 @@ button.secondary-link {
 
   .metric-cluster {
     justify-items: start;
+    text-align: left;
+  }
+
+  .interpolation-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .interpolation-summary small {
     text-align: left;
   }
 }

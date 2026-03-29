@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { frameContactY } from "../src/core/alignment/contact";
+import { computeFrameScaleFactors } from "../src/core/alignment/scaleStabilization";
 import { computeAnimationExportProfile } from "../src/core/export/computeSheetExportLayout";
 import { renderAnimationSheet } from "../src/core/export/renderAnimationSheet";
 import { processSpriteSheet } from "../src/core/pipeline/processSpriteSheet";
@@ -31,6 +32,27 @@ function bottomGap(
   return cellHeight;
 }
 
+function visibleHeight(
+  image: { width: number; height: number; data: Uint8Array },
+  cellWidth: number,
+  cellHeight: number,
+  frameIndex: number
+): number {
+  let top = cellHeight;
+  let bottom = -1;
+
+  for (let y = 0; y < cellHeight; y += 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      if (getPixel(image, frameIndex * cellWidth + x, y).a > 0) {
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+  }
+
+  return bottom < top ? 0 : bottom - top + 1;
+}
+
 async function main() {
   for (const file of files) {
     const result = await processSpriteSheet(path.join(root, "samples", file), 4, 3);
@@ -40,10 +62,18 @@ async function main() {
     for (const animation of result.animations) {
       const worldAnchorXs = animation.frames.map((frame) => Number((frame.analysis.coreAnchor.x + frame.offset.x).toFixed(2)));
       const worldGroundYs = animation.frames.map((frame) => Number((frameContactY(frame) + frame.offset.y).toFixed(2)));
+      const frameScales = computeFrameScaleFactors(animation);
+      const rawCoreHeights = animation.frames.map((frame) => frame.analysis.coreBounds.height);
+      const scaledCoreHeights = animation.frames.map((frame, index) =>
+        Number((frame.analysis.coreBounds.height * frameScales[index]).toFixed(2))
+      );
       const profile = computeAnimationExportProfile(animation);
       const rendered = renderAnimationSheet(animation, result.exportLayout);
       const bottomGaps = animation.frames.map((_, frameIndex) =>
         bottomGap(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
+      );
+      const visibleHeights = animation.frames.map((_, frameIndex) =>
+        visibleHeight(rendered.image, rendered.metadata.cellWidth, rendered.metadata.cellHeight, frameIndex)
       );
 
       console.log(
@@ -53,7 +83,11 @@ async function main() {
           ` aligned=${animation.metrics.alignedJitterScore.toFixed(2)}` +
           ` anchorRange=${range(worldAnchorXs).toFixed(2)}` +
           ` groundRange=${range(worldGroundYs).toFixed(2)}` +
+          ` scale=[${frameScales.join(", ")}]` +
+          ` rawCoreHeight=[${rawCoreHeights.join(", ")}]` +
+          ` scaledCoreHeight=[${scaledCoreHeights.join(", ")}]` +
           ` bottomGap=[${bottomGaps.join(", ")}]` +
+          ` visibleHeight=[${visibleHeights.join(", ")}]` +
           ` anchor=[${worldAnchorXs.join(", ")}]` +
           ` ground=[${worldGroundYs.join(", ")}]` +
           ` exportAnchor=${profile.anchorX}` +

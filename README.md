@@ -80,6 +80,36 @@ Ignored by default:
 - `*.log`
 - `*.tsbuildinfo`
 
+## Free Subdomain Deploy
+
+The fastest zero-cost public URL for this repo is GitHub Pages.
+
+- target URL after deployment: `https://pupre.github.io/Sprite_Registration/`
+- local development stays on `/`
+- GitHub Pages builds use `/<repo>/` automatically through `VITE_BASE_PATH`
+
+Steps:
+
+1. Push the repository to GitHub on `main`.
+2. In the repository settings, open `Pages`.
+3. Set the build source to `GitHub Actions`.
+4. Wait for the `Deploy Vite app to GitHub Pages` workflow to finish.
+5. Open `https://pupre.github.io/Sprite_Registration/`
+
+Optional local verification for the GitHub Pages path:
+
+```bash
+VITE_BASE_PATH=/Sprite_Registration/ npm run build
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:VITE_BASE_PATH = "/Sprite_Registration/"
+npm run build
+Remove-Item Env:VITE_BASE_PATH
+```
+
 ## Next Implementation Stages
 
 1. Reframe the product around transparent-alpha sprite inputs only.

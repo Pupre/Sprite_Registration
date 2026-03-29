@@ -5,6 +5,7 @@ import { createZipBlob } from "./browser/zip";
 import type { ZipEntry } from "./browser/zip";
 import { applyManualTweaks } from "./core/alignment/applyManualTweaks";
 import { renderAnimationSheet } from "./core/export/renderAnimationSheet";
+import { renderInterpolatedAnimationSheet } from "./core/export/renderInterpolatedAnimationSheet";
 import { renderRawAnimationSheet } from "./core/export/renderRawAnimationSheet";
 import { inferGridLayout } from "./core/layout/inferGridLayout";
 import { processSpriteImage } from "./core/pipeline/processSpriteImage";
@@ -36,6 +37,22 @@ interface AlignedRowPreview {
   cellHeight: number;
 }
 
+interface InterpolatedRowPreview {
+  id: string;
+  row: number;
+  imageUrl: string;
+  imageWidth: number;
+  imageHeight: number;
+  pngName: string;
+  metadataUrl: string;
+  metadataName: string;
+  frameCount: number;
+  cellWidth: number;
+  cellHeight: number;
+  sourceFrameCount: number;
+  insertedFrameCount: number;
+}
+
 interface RawRowPreview {
   id: string;
   row: number;
@@ -54,6 +71,7 @@ interface BrowserPreview {
   rawCells: RawCellPreview[];
   rawRows: RawRowPreview[];
   alignedRows: AlignedRowPreview[];
+  interpolatedRows: InterpolatedRowPreview[];
   summaryUrl: string;
   summaryName: string;
   layout: LayoutResolution;
@@ -72,6 +90,8 @@ interface LayoutResolution {
 }
 
 type ManualTweakState = Record<string, Record<string, Point>>;
+
+const ENABLE_INTERPOLATION_EXPERIMENT = false;
 
 function fileStem(fileName: string): string {
   return fileName.replace(/\.[^/.]+$/, "") || "sprite-sheet";
@@ -236,7 +256,74 @@ function RowComparisonPlayer(props: {
   );
 }
 
-function disposeAlignedRows(rows: AlignedRowPreview[]) {
+function AnimationStripPlayer(props: {
+  imageUrl: string;
+  frameCount: number;
+  cellWidth: number;
+  cellHeight: number;
+  label: string;
+}) {
+  const { imageUrl, frameCount, cellWidth, cellHeight, label } = props;
+  const [frameIndex, setFrameIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    setFrameIndex(0);
+    setPlaying(false);
+  }, [cellHeight, cellWidth, frameCount, imageUrl]);
+
+  useEffect(() => {
+    if (!playing || frameCount <= 1) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setFrameIndex((current) => (current + 1) % frameCount);
+    }, 150);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [frameCount, playing]);
+
+  return (
+    <div className="comparison-player single">
+      <FrameStripViewport
+        imageUrl={imageUrl}
+        label={label}
+        frameCount={frameCount}
+        cellWidth={cellWidth}
+        cellHeight={cellHeight}
+        frameIndex={frameIndex}
+      />
+      <div className="player-controls">
+        <button
+          type="button"
+          className="tiny-button"
+          disabled={frameCount <= 1}
+          onClick={() => setPlaying((current) => !current)}
+        >
+          {playing ? "일시정지" : "재생"}
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(0, frameCount - 1)}
+          value={frameIndex}
+          onChange={(event) => {
+            setPlaying(false);
+            setFrameIndex(Number(event.target.value));
+          }}
+        />
+        <span className="player-frame">
+          F{frameIndex + 1}/{frameCount}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function disposeExportRows(rows: Array<{ imageUrl: string; metadataUrl: string }>) {
   for (const row of rows) {
     URL.revokeObjectURL(row.imageUrl);
     URL.revokeObjectURL(row.metadataUrl);
@@ -262,7 +349,11 @@ async function objectUrlToBytes(url: string): Promise<Uint8Array> {
   return Uint8Array.from(new Uint8Array(await response.arrayBuffer()));
 }
 
-function buildSummaryPayload(preview: BrowserPreview, alignedRows: AlignedRowPreview[]) {
+function buildSummaryPayload(
+  preview: BrowserPreview,
+  alignedRows: AlignedRowPreview[],
+  interpolatedRows: InterpolatedRowPreview[]
+) {
   return {
     sheetId: preview.sheet.id,
     originalFile: preview.originalName,
@@ -282,6 +373,13 @@ function buildSummaryPayload(preview: BrowserPreview, alignedRows: AlignedRowPre
       row: row.row,
       frameCount: row.frameCount,
       metrics: row.metrics
+    })),
+    interpolation: interpolatedRows.map((row) => ({
+      id: row.id,
+      row: row.row,
+      frameCount: row.frameCount,
+      sourceFrameCount: row.sourceFrameCount,
+      insertedFrameCount: row.insertedFrameCount
     }))
   };
 }
@@ -303,6 +401,11 @@ function disposePreview(preview: BrowserPreview | null) {
   }
 
   for (const row of preview.alignedRows) {
+    URL.revokeObjectURL(row.imageUrl);
+    URL.revokeObjectURL(row.metadataUrl);
+  }
+
+  for (const row of preview.interpolatedRows) {
     URL.revokeObjectURL(row.imageUrl);
     URL.revokeObjectURL(row.metadataUrl);
   }
@@ -411,6 +514,31 @@ async function buildPreview(
     })
   );
 
+  const interpolatedRows = ENABLE_INTERPOLATION_EXPERIMENT
+    ? await Promise.all(
+        sheet.animations.map(async (animation) => {
+          const rendered = renderInterpolatedAnimationSheet(animation, sheet.exportLayout);
+          const rowLabel = animation.row + 1;
+
+          return {
+            id: animation.id,
+            row: animation.row,
+            imageUrl: await rgbaImageToObjectUrl(rendered.image),
+            imageWidth: rendered.image.width,
+            imageHeight: rendered.image.height,
+            pngName: `${sheetId}-row-${rowLabel}-interpolated.png`,
+            metadataUrl: jsonToObjectUrl(rendered.metadata),
+            metadataName: `${sheetId}-row-${rowLabel}-interpolated.json`,
+            frameCount: rendered.metadata.frameCount,
+            cellWidth: rendered.metadata.cellWidth,
+            cellHeight: rendered.metadata.cellHeight,
+            sourceFrameCount: rendered.metadata.sourceFrameCount,
+            insertedFrameCount: rendered.metadata.insertedFrameCount
+          };
+        })
+      )
+    : [];
+
   const summaryPayload = buildSummaryPayload(
     {
       originalUrl,
@@ -419,11 +547,13 @@ async function buildPreview(
       rawCells,
       rawRows,
       alignedRows,
+      interpolatedRows,
       summaryUrl: "",
       summaryName: `${sheetId}-summary.json`,
       layout: resolvedLayout
     },
-    alignedRows
+    alignedRows,
+    interpolatedRows
   );
 
   return {
@@ -433,38 +563,75 @@ async function buildPreview(
     rawCells,
     rawRows,
     alignedRows,
+    interpolatedRows,
     summaryUrl: jsonToObjectUrl(summaryPayload),
     summaryName: `${sheetId}-summary.json`,
     layout: resolvedLayout
   };
 }
 
-async function buildAlignedRowPreviews(
+async function buildAdjustedRowPreviews(
   sheet: ProcessedSpriteSheet,
   tweaks: ManualTweakState
-): Promise<AlignedRowPreview[]> {
-  return Promise.all(
-    sheet.animations.map(async (animation) => {
-      const adjusted = applyManualTweaks(animation, tweaks[animation.id] ?? {});
-      const rendered = renderAnimationSheet(adjusted, sheet.exportLayout);
-      const rowLabel = adjusted.row + 1;
+): Promise<{
+  alignedRows: AlignedRowPreview[];
+  interpolatedRows: InterpolatedRowPreview[];
+}> {
+  const adjustedAnimations = sheet.animations.map((animation) =>
+    applyManualTweaks(animation, tweaks[animation.id] ?? {})
+  );
+
+  const alignedRows = await Promise.all(
+    adjustedAnimations.map(async (animation) => {
+      const rendered = renderAnimationSheet(animation, sheet.exportLayout);
+      const rowLabel = animation.row + 1;
 
       return {
-        id: adjusted.id,
-        row: adjusted.row,
+        id: animation.id,
+        row: animation.row,
         imageUrl: await rgbaImageToObjectUrl(rendered.image),
         imageWidth: rendered.image.width,
         imageHeight: rendered.image.height,
         pngName: `${sheet.id}-row-${rowLabel}.png`,
         metadataUrl: jsonToObjectUrl(rendered.metadata),
         metadataName: `${sheet.id}-row-${rowLabel}.json`,
-        metrics: adjusted.metrics,
+        metrics: animation.metrics,
         frameCount: rendered.metadata.frameCount,
         cellWidth: rendered.metadata.cellWidth,
         cellHeight: rendered.metadata.cellHeight
       };
     })
   );
+
+  const interpolatedRows = ENABLE_INTERPOLATION_EXPERIMENT
+    ? await Promise.all(
+        adjustedAnimations.map(async (animation) => {
+          const rendered = renderInterpolatedAnimationSheet(animation, sheet.exportLayout);
+          const rowLabel = animation.row + 1;
+
+          return {
+            id: animation.id,
+            row: animation.row,
+            imageUrl: await rgbaImageToObjectUrl(rendered.image),
+            imageWidth: rendered.image.width,
+            imageHeight: rendered.image.height,
+            pngName: `${sheet.id}-row-${rowLabel}-interpolated.png`,
+            metadataUrl: jsonToObjectUrl(rendered.metadata),
+            metadataName: `${sheet.id}-row-${rowLabel}-interpolated.json`,
+            frameCount: rendered.metadata.frameCount,
+            cellWidth: rendered.metadata.cellWidth,
+            cellHeight: rendered.metadata.cellHeight,
+            sourceFrameCount: rendered.metadata.sourceFrameCount,
+            insertedFrameCount: rendered.metadata.insertedFrameCount
+          };
+        })
+      )
+    : [];
+
+  return {
+    alignedRows,
+    interpolatedRows
+  };
 }
 
 export function App() {
@@ -475,6 +642,7 @@ export function App() {
   const [preview, setPreview] = useState<BrowserPreview | null>(null);
   const [manualTweaks, setManualTweaks] = useState<ManualTweakState>({});
   const [adjustedAlignedRows, setAdjustedAlignedRows] = useState<AlignedRowPreview[]>([]);
+  const [adjustedInterpolatedRows, setAdjustedInterpolatedRows] = useState<InterpolatedRowPreview[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPackaging, setIsPackaging] = useState(false);
   const [status, setStatus] = useState("스프라이트 시트 PNG를 업로드하면 현재 registration 엔진을 바로 실행합니다.");
@@ -482,6 +650,7 @@ export function App() {
   const jobRef = useRef(0);
   const previewRef = useRef<BrowserPreview | null>(null);
   const adjustedRowsRef = useRef<AlignedRowPreview[]>([]);
+  const adjustedInterpolatedRowsRef = useRef<InterpolatedRowPreview[]>([]);
   const hasManualTweaks = Object.values(manualTweaks).some((rowTweaks) => Object.keys(rowTweaks).length > 0);
 
   useEffect(() => {
@@ -493,8 +662,13 @@ export function App() {
   }, [adjustedAlignedRows]);
 
   useEffect(() => {
+    adjustedInterpolatedRowsRef.current = adjustedInterpolatedRows;
+  }, [adjustedInterpolatedRows]);
+
+  useEffect(() => {
     return () => {
-      disposeAlignedRows(adjustedRowsRef.current);
+      disposeExportRows(adjustedRowsRef.current);
+      disposeExportRows(adjustedInterpolatedRowsRef.current);
       disposePreview(previewRef.current);
     };
   }, []);
@@ -502,7 +676,11 @@ export function App() {
   useEffect(() => {
     setManualTweaks({});
     setAdjustedAlignedRows((current) => {
-      disposeAlignedRows(current);
+      disposeExportRows(current);
+      return [];
+    });
+    setAdjustedInterpolatedRows((current) => {
+      disposeExportRows(current);
       return [];
     });
   }, [preview]);
@@ -513,7 +691,14 @@ export function App() {
         if (current.length === 0) {
           return current;
         }
-        disposeAlignedRows(current);
+        disposeExportRows(current);
+        return [];
+      });
+      setAdjustedInterpolatedRows((current) => {
+        if (current.length === 0) {
+          return current;
+        }
+        disposeExportRows(current);
         return [];
       });
       return;
@@ -521,16 +706,21 @@ export function App() {
 
     let cancelled = false;
 
-    void buildAlignedRowPreviews(preview.sheet, manualTweaks)
-      .then((nextRows) => {
+    void buildAdjustedRowPreviews(preview.sheet, manualTweaks)
+      .then(({ alignedRows: nextAlignedRows, interpolatedRows: nextInterpolatedRows }) => {
         if (cancelled) {
-          disposeAlignedRows(nextRows);
+          disposeExportRows(nextAlignedRows);
+          disposeExportRows(nextInterpolatedRows);
           return;
         }
 
         setAdjustedAlignedRows((current) => {
-          disposeAlignedRows(current);
-          return nextRows;
+          disposeExportRows(current);
+          return nextAlignedRows;
+        });
+        setAdjustedInterpolatedRows((current) => {
+          disposeExportRows(current);
+          return nextInterpolatedRows;
         });
       })
       .catch((caughtError) => {
@@ -624,7 +814,7 @@ export function App() {
       return;
     }
 
-    const summary = buildSummaryPayload(preview, alignedRows);
+    const summary = buildSummaryPayload(preview, alignedRows, interpolatedRows);
     downloadBlob(
       new Blob([JSON.stringify(summary, null, 2)], { type: "application/json" }),
       `${preview.sheet.id}-summary.json`
@@ -642,7 +832,7 @@ export function App() {
     try {
       const summaryBytes = Uint8Array.from(
         new TextEncoder().encode(
-        JSON.stringify(buildSummaryPayload(preview, alignedRows), null, 2)
+        JSON.stringify(buildSummaryPayload(preview, alignedRows, interpolatedRows), null, 2)
         )
       );
       const entries: ZipEntry[] = [
@@ -659,6 +849,17 @@ export function App() {
         });
         entries.push({
           name: `aligned/${row.metadataName}`,
+          data: await objectUrlToBytes(row.metadataUrl)
+        });
+      }
+
+      for (const row of interpolatedRows) {
+        entries.push({
+          name: `interpolated/${row.pngName}`,
+          data: await objectUrlToBytes(row.imageUrl)
+        });
+        entries.push({
+          name: `interpolated/${row.metadataName}`,
           data: await objectUrlToBytes(row.metadataUrl)
         });
       }
@@ -754,6 +955,9 @@ export function App() {
       : null;
 
   const alignedRows = preview ? (hasManualTweaks ? adjustedAlignedRows : preview.alignedRows) : [];
+  const interpolatedRows = preview
+    ? (hasManualTweaks ? adjustedInterpolatedRows : preview.interpolatedRows)
+    : [];
 
   const rowGroups = preview
     ? Array.from({ length: preview.sheet.rows }, (_, rowIndex) => ({
@@ -763,7 +967,8 @@ export function App() {
           .filter((cell) => cell.row === rowIndex)
           .sort((a, b) => a.column - b.column),
         raw: preview.rawRows.find((row) => row.row === rowIndex) ?? null,
-        aligned: alignedRows.find((row) => row.row === rowIndex) ?? null
+        aligned: alignedRows.find((row) => row.row === rowIndex) ?? null,
+        interpolated: interpolatedRows.find((row) => row.row === rowIndex) ?? null
       }))
     : [];
 
@@ -976,7 +1181,7 @@ export function App() {
 
             {preview ? (
               <div className="row-list">
-                {rowGroups.map(({ rowIndex, animation, cells, raw, aligned }) => (
+                {rowGroups.map(({ rowIndex, animation, cells, raw, aligned, interpolated }) => (
                   <article className="row-card" key={`row-${rowIndex}`}>
                     <div className="row-summary">
                       <div>
@@ -1011,6 +1216,42 @@ export function App() {
                                 메타데이터 다운로드
                               </a>
                             </div>
+
+                            {interpolated ? (
+                              <div className="interpolation-panel">
+                                <div className="interpolation-summary">
+                                  <div>
+                                    <span className="compare-label">보간 실험</span>
+                                    <h4>
+                                      {interpolated.sourceFrameCount} → {interpolated.frameCount} 프레임
+                                    </h4>
+                                  </div>
+                                  <small>
+                                    인접 프레임 사이에 {interpolated.insertedFrameCount}장의 중간 프레임을
+                                    생성했습니다.
+                                  </small>
+                                </div>
+                                <AnimationStripPlayer
+                                  imageUrl={interpolated.imageUrl}
+                                  frameCount={interpolated.frameCount}
+                                  cellWidth={interpolated.cellWidth}
+                                  cellHeight={interpolated.cellHeight}
+                                  label={`행 ${rowIndex + 1} 보간 재생`}
+                                />
+                                <div className="download-row">
+                                  <a className="secondary-link" href={interpolated.imageUrl} download={interpolated.pngName}>
+                                    보간 PNG 다운로드
+                                  </a>
+                                  <a
+                                    className="secondary-link"
+                                    href={interpolated.metadataUrl}
+                                    download={interpolated.metadataName}
+                                  >
+                                    보간 메타데이터 다운로드
+                                  </a>
+                                </div>
+                              </div>
+                            ) : null}
 
                             <div className="tweak-panel">
                               <div className="tweak-header">

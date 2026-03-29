@@ -1,3 +1,4 @@
+import { computeFrameScaleFactors } from "../alignment/scaleStabilization";
 import type { ProcessedAnimation, Rect, SheetExportLayout } from "../types/image";
 import { frameContactY } from "../alignment/contact";
 
@@ -9,6 +10,7 @@ export interface AnimationExportProfile {
   topExtent: number;
   bottomExtent: number;
   sourceRects: Rect[];
+  frameScales: number[];
 }
 
 function median(values: number[]): number {
@@ -27,6 +29,7 @@ function median(values: number[]): number {
 
 export function computeAnimationExportProfile(animation: ProcessedAnimation): AnimationExportProfile {
   const sourceRects = animation.frames.map((frame) => frame.analysis.fullBounds);
+  const frameScales = computeFrameScaleFactors(animation);
   const worldAnchorXs = animation.frames.map((frame) => frame.analysis.coreAnchor.x + frame.offset.x);
   const worldGroundYs = animation.frames.map((frame) => frameContactY(frame) + frame.offset.y);
   const anchorX = Math.round(median(worldAnchorXs));
@@ -39,17 +42,22 @@ export function computeAnimationExportProfile(animation: ProcessedAnimation): An
 
   sourceRects.forEach((rect, index) => {
     const frame = animation.frames[index];
-    const worldRect = {
-      x: rect.x + frame.offset.x,
-      y: rect.y + frame.offset.y,
-      width: rect.width,
-      height: rect.height
-    };
+    const scale = frameScales[index];
+    const anchorLocalX = frame.analysis.coreAnchor.x;
+    const groundLocalY = frameContactY(frame);
+    const worldAnchorX = anchorLocalX + frame.offset.x;
+    const worldGroundY = groundLocalY + frame.offset.y;
 
-    leftExtent = Math.max(leftExtent, anchorX - worldRect.x);
-    rightExtent = Math.max(rightExtent, worldRect.x + worldRect.width - anchorX);
-    topExtent = Math.max(topExtent, groundY - worldRect.y);
-    bottomExtent = Math.max(bottomExtent, worldRect.y + worldRect.height - groundY);
+    leftExtent = Math.max(leftExtent, (anchorLocalX - rect.x) * scale + (anchorX - worldAnchorX));
+    rightExtent = Math.max(
+      rightExtent,
+      (rect.x + rect.width - anchorLocalX) * scale + (worldAnchorX - anchorX)
+    );
+    topExtent = Math.max(topExtent, (groundLocalY - rect.y) * scale + (groundY - worldGroundY));
+    bottomExtent = Math.max(
+      bottomExtent,
+      (rect.y + rect.height - groundLocalY) * scale + (worldGroundY - groundY)
+    );
   });
 
   return {
@@ -59,7 +67,8 @@ export function computeAnimationExportProfile(animation: ProcessedAnimation): An
     rightExtent: Math.max(1, Math.ceil(rightExtent)),
     topExtent: Math.max(1, Math.ceil(topExtent)),
     bottomExtent: Math.max(1, Math.ceil(bottomExtent)),
-    sourceRects
+    sourceRects,
+    frameScales
   };
 }
 
