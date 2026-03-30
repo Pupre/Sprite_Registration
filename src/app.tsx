@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, DragEvent } from "react";
 import { decodeBrowserImage, jsonToObjectUrl, rgbaImageToObjectUrl } from "./browser/imageCodecs";
 import { createZipBlob } from "./browser/zip";
 import type { ZipEntry } from "./browser/zip";
@@ -8,6 +8,7 @@ import { renderAnimationSheet } from "./core/export/renderAnimationSheet";
 import { renderInterpolatedAnimationSheet } from "./core/export/renderInterpolatedAnimationSheet";
 import { renderRawAnimationSheet } from "./core/export/renderRawAnimationSheet";
 import { inferGridLayout } from "./core/layout/inferGridLayout";
+import { resolveAutoLayout } from "./core/layout/resolveLayout";
 import { processSpriteImage } from "./core/pipeline/processSpriteImage";
 import type { AnimationMetrics, ProcessedSpriteSheet, Rect } from "./core/types/image";
 import type { Point } from "./core/types/sprite";
@@ -75,13 +76,15 @@ interface BrowserPreview {
   summaryUrl: string;
   summaryName: string;
   layout: LayoutResolution;
+  detectedRowFrameCounts: number[];
+  layoutModeUsed: "auto-uniform" | "auto-variable" | "manual-uniform" | "manual-variable";
 }
 
 type LayoutMode = "auto" | "manual";
 
 interface LayoutResolution {
   mode: LayoutMode;
-  source: "auto" | "manual" | "manual-fallback";
+  source: "auto" | "manual" | "manual-fallback" | "mixed";
   columns: number;
   rows: number;
   note: string;
@@ -95,6 +98,18 @@ const ENABLE_INTERPOLATION_EXPERIMENT = false;
 
 function fileStem(fileName: string): string {
   return fileName.replace(/\.[^/.]+$/, "") || "sprite-sheet";
+}
+
+function pickFirstPngFile(files: FileList | File[] | null | undefined): File | null {
+  if (!files) {
+    return null;
+  }
+
+  return (
+    Array.from(files).find(
+      (file) => file.type === "image/png" || file.name.toLowerCase().endsWith(".png")
+    ) ?? null
+  );
 }
 
 function clampGridCount(value: number): number {
@@ -362,6 +377,8 @@ function buildSummaryPayload(
     columns: preview.sheet.columns,
     rows: preview.sheet.rows,
     layout: preview.layout,
+    detectedRowFrameCounts: preview.detectedRowFrameCounts,
+    layoutModeUsed: preview.layoutModeUsed,
     gridRects: preview.rawCells.map((cell) => ({
       id: cell.id,
       row: cell.row,
@@ -415,7 +432,8 @@ async function buildPreview(
   file: File,
   layoutMode: LayoutMode,
   manualColumns: number,
-  manualRows: number
+  manualRows: number,
+  rowFrameCounts?: number[]
 ): Promise<BrowserPreview> {
   const image = await decodeBrowserImage(file);
   const sheetId = fileStem(file.name);
@@ -425,27 +443,16 @@ async function buildPreview(
 
   if (layoutMode === "auto") {
     const inferred = inferGridLayout(image);
-    if (inferred.reliable) {
-      resolvedLayout = {
-        mode: "auto",
-        source: "auto",
-        columns: inferred.columns.count,
-        rows: inferred.rows.count,
-        note: `투명 알파 projection 기반 자동 감지 결과를 사용했습니다. 열 ${inferred.columns.count}, 행 ${inferred.rows.count}으로 처리했습니다.`,
-        method: inferred.method,
-        reliable: true
-      };
-    } else {
-      resolvedLayout = {
-        mode: "auto",
-        source: "manual-fallback",
-        columns: normalizedColumns,
-        rows: normalizedRows,
-        note: "자동 감지 신뢰도가 낮아서 현재 수동 입력값으로 fallback 했습니다. 투명 알파 PNG에서 가장 잘 동작합니다.",
-        method: inferred.method,
-        reliable: false
-      };
-    }
+    const resolvedAuto = resolveAutoLayout(inferred, normalizedColumns, normalizedRows);
+    resolvedLayout = {
+      mode: "auto",
+      source: resolvedAuto.source,
+      columns: resolvedAuto.columns,
+      rows: resolvedAuto.rows,
+      note: resolvedAuto.note,
+      method: inferred.method,
+      reliable: resolvedAuto.reliable
+    };
   } else {
     resolvedLayout = {
       mode: "manual",
@@ -458,8 +465,20 @@ async function buildPreview(
     };
   }
 
-  const sheet = processSpriteImage(image, sheetId, resolvedLayout.columns, resolvedLayout.rows);
+  const layoutModeUsed =
+    layoutMode === "auto"
+      ? rowFrameCounts && rowFrameCounts.length > 0
+        ? "manual-variable"
+        : "auto-variable"
+      : "manual-uniform";
+  const sheet = processSpriteImage(image, sheetId, resolvedLayout.columns, resolvedLayout.rows, {
+    columns: resolvedLayout.columns,
+    rows: resolvedLayout.rows,
+    rowFrameCounts,
+    mode: layoutModeUsed
+  });
   const originalUrl = URL.createObjectURL(file);
+  const detectedRowFrameCounts = sheet.animations.map((animation) => animation.frames.length);
 
   const rawCells = await Promise.all(
     sheet.animations.flatMap((animation) =>
@@ -550,7 +569,9 @@ async function buildPreview(
       interpolatedRows,
       summaryUrl: "",
       summaryName: `${sheetId}-summary.json`,
-      layout: resolvedLayout
+      layout: resolvedLayout,
+      detectedRowFrameCounts,
+      layoutModeUsed
     },
     alignedRows,
     interpolatedRows
@@ -566,7 +587,9 @@ async function buildPreview(
     interpolatedRows,
     summaryUrl: jsonToObjectUrl(summaryPayload),
     summaryName: `${sheetId}-summary.json`,
-    layout: resolvedLayout
+    layout: resolvedLayout,
+    detectedRowFrameCounts,
+    layoutModeUsed
   };
 }
 
@@ -641,10 +664,12 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<BrowserPreview | null>(null);
   const [manualTweaks, setManualTweaks] = useState<ManualTweakState>({});
+  const [rowFrameOverrides, setRowFrameOverrides] = useState<Record<number, number>>({});
   const [adjustedAlignedRows, setAdjustedAlignedRows] = useState<AlignedRowPreview[]>([]);
   const [adjustedInterpolatedRows, setAdjustedInterpolatedRows] = useState<InterpolatedRowPreview[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPackaging, setIsPackaging] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [status, setStatus] = useState("스프라이트 시트 PNG를 업로드하면 현재 registration 엔진을 바로 실행합니다.");
   const [error, setError] = useState<string | null>(null);
   const jobRef = useRef(0);
@@ -674,6 +699,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    setRowFrameOverrides(
+      preview ? Object.fromEntries(preview.detectedRowFrameCounts.map((count, rowIndex) => [rowIndex, count])) : {}
+    );
     setManualTweaks({});
     setAdjustedAlignedRows((current) => {
       disposeExportRows(current);
@@ -740,7 +768,8 @@ export function App() {
     file: File,
     nextLayoutMode = layoutMode,
     nextColumns = columns,
-    nextRows = rows
+    nextRows = rows,
+    nextRowFrameCounts?: number[]
   ) {
     const normalizedColumns = clampGridCount(nextColumns);
     const normalizedRows = clampGridCount(nextRows);
@@ -755,12 +784,21 @@ export function App() {
     setError(null);
     setStatus(
       nextLayoutMode === "auto"
-        ? `${file.name}의 행/열 수를 자동으로 추론한 뒤 처리하는 중입니다...`
+        ? nextRowFrameCounts?.length
+          ? `${file.name}의 row별 frame 수 override를 적용해 다시 처리하는 중입니다...`
+          : `${file.name}의 행/열 수를 자동으로 추론한 뒤 처리하는 중입니다...`
         : `${file.name}을(를) ${normalizedColumns} x ${normalizedRows} 레이아웃으로 처리하는 중입니다...`
     );
 
     try {
-      const nextPreview = await buildPreview(file, nextLayoutMode, normalizedColumns, normalizedRows);
+      const rowFrameCounts = nextRowFrameCounts?.length ? nextRowFrameCounts : undefined;
+      const nextPreview = await buildPreview(
+        file,
+        nextLayoutMode,
+        normalizedColumns,
+        normalizedRows,
+        rowFrameCounts
+      );
       if (jobId !== jobRef.current) {
         disposePreview(nextPreview);
         return;
@@ -794,8 +832,38 @@ export function App() {
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const file = pickFirstPngFile(event.target.files);
     if (!file) {
+      return;
+    }
+
+    void processFile(file);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    if (!isDragOver) {
+      setIsDragOver(true);
+    }
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setIsDragOver(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setIsDragOver(false);
+
+    const file = pickFirstPngFile(event.dataTransfer?.files);
+    if (!file) {
+      setError("PNG 파일만 업로드할 수 있습니다.");
+      setStatus("드롭한 항목에서 처리 가능한 PNG를 찾지 못했습니다.");
       return;
     }
 
@@ -807,6 +875,18 @@ export function App() {
       return;
     }
     await processFile(selectedFile, layoutMode, columns, rows);
+  }
+
+  async function rerunWithRowOverrides() {
+    if (!selectedFile || !preview) {
+      return;
+    }
+
+    const counts = Array.from({ length: preview.sheet.rows }, (_, rowIndex) =>
+      clampGridCount(rowFrameOverrides[rowIndex] ?? preview.detectedRowFrameCounts[rowIndex] ?? 1)
+    );
+
+    await processFile(selectedFile, "auto", columns, rows, counts);
   }
 
   async function downloadCurrentSummary() {
@@ -1014,11 +1094,16 @@ export function App() {
             <h2>업로드하고 처리하기</h2>
           </div>
 
-          <label className="upload-dropzone">
+          <label
+            className={`upload-dropzone${isDragOver ? " drag-over" : ""}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <span className="upload-title">스프라이트 시트 PNG</span>
             <span className="upload-copy">
-              시트 하나를 선택하세요. 현재 브라우저 MVP는 규칙적인 격자형 시트를 전제로 하며,
-              아래에 입력한 행/열 수를 사용합니다.
+              시트 하나를 선택하거나, PNG를 이 영역에 드롭하세요. 자동 모드에서는 행 수를 기준으로 각 row의
+              frame 경계를 따로 감지하고, 수동 모드에서는 기존처럼 입력한 행/열 수를 사용합니다.
             </span>
             <input type="file" accept="image/png" onChange={handleFileChange} />
           </label>
@@ -1085,6 +1170,51 @@ export function App() {
 
           {preview ? (
             <div className="download-block">
+              <div className="panel-head compact">
+                <p className="section-kicker">감지 결과</p>
+                <h3>Row별 프레임 수</h3>
+              </div>
+              <ul className="metric-list">
+                {preview.detectedRowFrameCounts.map((count, rowIndex) => (
+                  <li key={rowIndex}>
+                    <span>{`Row ${rowIndex + 1}`}</span>
+                    <strong>{`${count} frames`}</strong>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="panel-head compact">
+                <p className="section-kicker">수동 보정</p>
+                <h3>Row별 프레임 수 override</h3>
+              </div>
+              <div className="tweak-grid">
+                {preview.detectedRowFrameCounts.map((count, rowIndex) => (
+                  <label className="field" key={rowIndex}>
+                    <span>{`Row ${rowIndex + 1}`}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={rowFrameOverrides[rowIndex] ?? count}
+                      onChange={(event) =>
+                        setRowFrameOverrides((current) => ({
+                          ...current,
+                          [rowIndex]: clampGridCount(Number(event.target.value))
+                        }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <button
+                className="secondary-link action-link"
+                type="button"
+                disabled={!selectedFile || isProcessing}
+                onClick={() => void rerunWithRowOverrides()}
+              >
+                row별 프레임 수로 다시 처리
+              </button>
+
               <div className="panel-head compact">
                 <p className="section-kicker">다운로드</p>
                 <h3>세션 요약</h3>

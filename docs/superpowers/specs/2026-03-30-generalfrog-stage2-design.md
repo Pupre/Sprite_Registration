@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create a new sprite sheet for the stage-2 evolution of `GeneralFrog` as a pet asset. The source of truth for stage 1 is `samples/GeneralFrog.png`. The new asset should feel like a clear evolution of the same frog knight while preserving the original identity and leaving enough headroom for stages 3-5.
+Create one new sprite sheet PNG for the stage-2 evolution of `GeneralFrog` as a pet asset. The source of truth for stage 1 is `samples/GeneralFrog.png`. The new asset should feel like a clear evolution of the same frog knight while preserving the original identity and leaving enough headroom for stages 3-5.
 
 ## Product Context
 
@@ -12,6 +12,8 @@ The broader project exists to stabilize sprite-sheet playback when AI-generated 
 2. reduce frame-to-frame jitter risk as much as possible before the project's alignment pipeline is applied
 
 The asset is intended for use as a pet, not a primary boss or enemy. It may fight, but it should read first as a companion character.
+
+This task is also an image-generation capability test. The prompt should therefore stay realistic to actual usage rather than being compressed to the point that it no longer reflects normal generation behavior.
 
 ## Character Direction
 
@@ -39,9 +41,11 @@ The selected direction is a moderate "royal growth" evolution. This is not a dra
 
 ## Output Scope
 
-Produce one sprite sheet for the stage-2 evolved GeneralFrog.
+Produce one sprite sheet PNG for the stage-2 evolved GeneralFrog.
 
 The sheet should use the existing convention of one animation per row. Frame counts do not need to stay fixed at four. Each row may use the number of frames that best supports the motion.
+
+The scope is intentionally limited to a single evolution step. This task does not attempt to generate stages 3-5. Instead, it treats `samples/GeneralFrog.png` as the known stage-1 form and asks for the next-step stage-2 form, expressed through multiple animation rows inside that one sheet.
 
 ## Required Animations
 
@@ -138,5 +142,7 @@ Failure cases:
 ## Implementation Notes
 
 - use `samples/GeneralFrog.png` as the visual reference for identity
+- treat `samples/GeneralFrog.png` explicitly as the stage-1 form
 - create only the stage-2 sheet in this task
+- generate a PNG asset as the primary deliverable for this test
 - preserve room for later stages 3-5 to escalate body, armor, regality, and power presentation

@@ -156,6 +156,15 @@ a {
   cursor: pointer;
 }
 
+.upload-dropzone.drag-over {
+  border-color: rgba(244, 192, 105, 0.88);
+  background:
+    linear-gradient(180deg, rgba(244, 192, 105, 0.18), rgba(244, 192, 105, 0.06)),
+    rgba(255, 255, 255, 0.04);
+  box-shadow: 0 0 0 2px rgba(244, 192, 105, 0.16);
+  transform: translateY(-1px);
+}
+
 .upload-title {
   font-size: 1.1rem;
   font-weight: 700;
@@ -279,6 +288,23 @@ a {
 
 .status-card p {
   margin: 0;
+}
+
+.metric-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.metric-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .status-pill {

@@ -75,12 +75,25 @@ export interface ProcessedAnimation {
   metrics: AnimationMetrics;
 }
 
+export interface DetectedRowLayout {
+  row: number;
+  rect: Rect;
+  frameRects: Rect[];
+}
+
+export interface SpriteSheetLayout {
+  rows: DetectedRowLayout[];
+  mode: "manual-uniform" | "manual-variable" | "auto-uniform" | "auto-variable";
+  uniformColumns?: number;
+}
+
 export interface ProcessedSpriteSheet {
   id: string;
   width: number;
   height: number;
   columns: number;
   rows: number;
+  layout?: SpriteSheetLayout;
   animations: ProcessedAnimation[];
   exportLayout?: SheetExportLayout;
 }

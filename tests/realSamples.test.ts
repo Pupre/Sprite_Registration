@@ -242,4 +242,25 @@ describe("real sample pipeline", () => {
     },
     90000
   );
+
+  it(
+    "keeps the current sample folder stable in auto-variable mode",
+    async () => {
+      const results = await Promise.all(
+        samples.map((file) =>
+          processSpriteSheet(path.join(root, "samples", file), 4, 3, {
+            mode: "auto-variable",
+            columns: 4,
+            rows: 3
+          })
+        )
+      );
+
+      for (const result of results) {
+        expect(result.animations).toHaveLength(3);
+        expect(result.animations.every((animation) => animation.frames.length >= 3)).toBe(true);
+      }
+    },
+    90000
+  );
 });
